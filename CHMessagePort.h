@@ -18,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)releasePort;
 
 - (void)postNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo;
+- (void)postResponsiveNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo callBack:(void(^)(NSDictionary *responseDict))callBack;
+/* 必须在非主线程运行才能得到结果 */
 - (nullable NSDictionary *)postResponsiveNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo;
 
 - (void)addNotifyObserverWithName:(nonnull NSString *)name handler:(id(^)(NSString *notifyName,NSDictionary *responseDict))handler;

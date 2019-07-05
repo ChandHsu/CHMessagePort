@@ -51,25 +51,18 @@ typedef void (^CHNotifyResponseHandler)(NSString *notifyName,NSDictionary *respo
 extern CFNotificationCenterRef CFNotificationCenterGetDistributedCenter(void);
 void CHResponseHandler(CFNotificationCenterRef center,void *observer,CFStringRef name,const void *object,CFDictionaryRef userInfo)
 {
-    NSLog(@"哈哈哈-卡3==%d",[NSThread currentThread].isMainThread);
-    NSLog(@"哈哈哈==收到返回通知1");
     if(!CFDictionaryContainsKey(userInfo, (void *)@"data")) return;
-    NSLog(@"哈哈哈==收到返回通知2");
     const void *data = CFDictionaryGetValue(userInfo, (void *)@"data");
     if(!data) return;
-    NSLog(@"哈哈哈==收到返回通知3");
     
     NSDictionary *notiInfo = [NSJSONSerialization JSONObjectWithData:(__bridge NSData *)data options:NSJSONReadingMutableLeaves error:nil];
     
     CHMessagePort *port = [CHMessagePort sharedPort];
     port.cfNotiResult = [notiInfo copy];
-    NSLog(@"哈哈哈==收到返回通知4==%@",notiInfo);
     dispatch_semaphore_signal(port.cfNotiLock);
-    NSLog(@"哈哈哈==收到返回通知5");
 }
 void CHCFNotificationReciveHandler(CFNotificationCenterRef center,void *observer,CFStringRef name,const void *object,CFDictionaryRef userInfo)
 {
-    NSLog(@"哈哈哈==收到通知");
     NSString *notifyName = (__bridge NSString *)name;
     CHMessagePort *msgPort = [CHMessagePort sharedPort];
     
@@ -108,17 +101,16 @@ static dispatch_once_t predicate;
     self.cfNotiLock = dispatch_semaphore_create(0);
     self.timeOut = 3;
     
-    dispatch_async(dispatch_queue_create("CHWaitQueue", DISPATCH_QUEUE_CONCURRENT), ^{
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
+        CFNotificationCenterAddObserver(distributedCenter,
+                                        (const void *)self,
+                                        CHResponseHandler,
+                                        (__bridge CFStringRef)[NSString stringWithFormat:@"CHObserver_%@",[NSProcessInfo processInfo].processName],
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately
+                                        );
     });
-    CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
-    CFNotificationCenterAddObserver(distributedCenter,
-                                    (const void *)self,
-                                    CHResponseHandler,
-                                    (__bridge CFStringRef)[NSString stringWithFormat:@"CHObserver_%@",[NSProcessInfo processInfo].processName],
-                                    NULL,
-                                    CFNotificationSuspensionBehaviorDeliverImmediately
-                                    );
-    
 }
 - (void)releasePort{
     [self removeAllNotifyObserver];
@@ -186,11 +178,18 @@ static dispatch_once_t predicate;
     [self.responseObjs removeAllObjects];
 }
 
+/* 必须在非主线程执行 */
 - (void)postNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo{
     [self postNotifyWithName:name userInfo:userInfo waitForResponseNotifyWithName:nil];
 }
 - (nullable NSDictionary *)postResponsiveNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo{
     return [self postNotifyWithName:name userInfo:userInfo waitForResponseNotifyWithName:[NSProcessInfo processInfo].processName];
+}
+- (void)postResponsiveNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo callBack:(void(^)(NSDictionary *responseDict))callBack{
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSDictionary *dict = [self postNotifyWithName:name userInfo:userInfo waitForResponseNotifyWithName:[NSProcessInfo processInfo].processName];
+        if (callBack) callBack(dict);
+    });
 }
 - (nullable NSDictionary *)postNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo waitForResponseNotifyWithName:(nullable NSString *)responseNotifyName{
     
@@ -216,7 +215,6 @@ static dispatch_once_t predicate;
     
     CFNotificationCenterPostNotification(distributedCenter,notifyName,object,userInfoRef,true);
     
-    NSLog(@"哈哈哈-卡1==%d",[NSThread currentThread].isMainThread);
     if (responseNotifyName) {
         dispatch_time_t duration = dispatch_time(DISPATCH_TIME_NOW, self.timeOut * NSEC_PER_SEC);
         dispatch_semaphore_wait(self.cfNotiLock,duration);
