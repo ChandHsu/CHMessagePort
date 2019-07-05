@@ -9,9 +9,6 @@
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
-
-typedef void(^CHResponseHandler)(NSString *notifyName,NSDictionary *responseDict);
-
 @interface CHMessagePort : NSObject
 
 /* 通信超时时间,单位为秒 */
@@ -23,7 +20,7 @@ typedef void(^CHResponseHandler)(NSString *notifyName,NSDictionary *responseDict
 - (void)postNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo;
 - (nullable NSDictionary *)postResponsiveNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo;
 
-- (void)addNotifyObserverWithName:(nonnull NSString *)name responseAction:(nonnull CHResponseHandler)responseHandler;
+- (void)addNotifyObserverWithName:(nonnull NSString *)name handler:(id(^)(NSString *notifyName,NSDictionary *responseDict))handler;
 
 - (void)removeNotifyObserverWithName:(nonnull NSString *)name;
 - (void)removeAllNotifyObserver;

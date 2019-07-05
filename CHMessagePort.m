@@ -15,10 +15,13 @@
  此时,可将此文件编译为MRC,(__bridge NSData *)data转为(NSData *)data等,去除所有关于__bridge的东西
  */
 
+typedef void (^CHNotifyResponseHandler)(NSString *notifyName,NSDictionary *responseDict);
+
 @interface CHMessageResponseObj : NSObject
 
-@property (nonatomic,copy) NSString *notifyName;
-@property (nonatomic,copy) CHResponseHandler responseHandler;
+@property (nonatomic,copy,nonnull) NSString *notifyName;
+@property (nonatomic,copy,nullable) NSString *responseNotifyName;
+@property (nonatomic,copy,nonnull) CHNotifyResponseHandler responseHandler;
 /* 剩余响应次数 */
 @property (nonatomic,assign) int responseTimeOdd;
 
@@ -46,9 +49,27 @@
 @end
 
 extern CFNotificationCenterRef CFNotificationCenterGetDistributedCenter(void);
+void CHResponseHandler(CFNotificationCenterRef center,void *observer,CFStringRef name,const void *object,CFDictionaryRef userInfo)
+{
+    NSLog(@"哈哈哈-卡3==%d",[NSThread currentThread].isMainThread);
+    NSLog(@"哈哈哈==收到返回通知1");
+    if(!CFDictionaryContainsKey(userInfo, (void *)@"data")) return;
+    NSLog(@"哈哈哈==收到返回通知2");
+    const void *data = CFDictionaryGetValue(userInfo, (void *)@"data");
+    if(!data) return;
+    NSLog(@"哈哈哈==收到返回通知3");
+    
+    NSDictionary *notiInfo = [NSJSONSerialization JSONObjectWithData:(__bridge NSData *)data options:NSJSONReadingMutableLeaves error:nil];
+    
+    CHMessagePort *port = [CHMessagePort sharedPort];
+    port.cfNotiResult = [notiInfo copy];
+    NSLog(@"哈哈哈==收到返回通知4==%@",notiInfo);
+    dispatch_semaphore_signal(port.cfNotiLock);
+    NSLog(@"哈哈哈==收到返回通知5");
+}
 void CHCFNotificationReciveHandler(CFNotificationCenterRef center,void *observer,CFStringRef name,const void *object,CFDictionaryRef userInfo)
 {
-    
+    NSLog(@"哈哈哈==收到通知");
     NSString *notifyName = (__bridge NSString *)name;
     CHMessagePort *msgPort = [CHMessagePort sharedPort];
     
@@ -61,9 +82,9 @@ void CHCFNotificationReciveHandler(CFNotificationCenterRef center,void *observer
     }
     if (!responseObj) return;
     
-//    if(!CFDictionaryContainsKey(userInfo, (void *)@"data")) return;
     const void *data = CFDictionaryGetValue(userInfo, (void *)@"data");
-//    if(!data) return;
+    const void *responseNotifyName = CFDictionaryGetValue(userInfo, (void *)@"responseNotifyName");
+    if (responseNotifyName) responseObj.responseNotifyName = (__bridge NSString *)responseNotifyName;
     
     NSDictionary *notiInfo = [NSJSONSerialization JSONObjectWithData:(__bridge NSData *)data options:NSJSONReadingMutableLeaves error:nil];
     responseObj.responseTimeOdd --;
@@ -72,13 +93,6 @@ void CHCFNotificationReciveHandler(CFNotificationCenterRef center,void *observer
 }
 
 @implementation CHMessagePort
-
-- (NSMutableArray<CHMessageResponseObj *> *)responseObjs{
-    if (!_responseObjs) {
-        _responseObjs = [NSMutableArray array];
-    }
-    return _responseObjs;
-}
 
 static dispatch_once_t predicate;
 + (instancetype)sharedPort{
@@ -90,8 +104,21 @@ static dispatch_once_t predicate;
     return port;
 }
 - (void)afterInit{
+    self.responseObjs = [NSMutableArray array];
     self.cfNotiLock = dispatch_semaphore_create(0);
     self.timeOut = 3;
+    
+    dispatch_async(dispatch_queue_create("CHWaitQueue", DISPATCH_QUEUE_CONCURRENT), ^{
+    });
+    CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
+    CFNotificationCenterAddObserver(distributedCenter,
+                                    (const void *)self,
+                                    CHResponseHandler,
+                                    (__bridge CFStringRef)[NSString stringWithFormat:@"CHObserver_%@",[NSProcessInfo processInfo].processName],
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately
+                                    );
+    
 }
 - (void)releasePort{
     [self removeAllNotifyObserver];
@@ -109,18 +136,39 @@ static dispatch_once_t predicate;
                                     );
 }
 
-- (void)addNotifyObserverWithName:(nonnull NSString *)name responseAction:(nonnull CHResponseHandler)responseHandler{
-    [self addNotifyObserverWithName:name responseAction:responseHandler configHandler:nil];
+- (void)addNotifyObserverWithName:(nonnull NSString *)name handler:(nonnull id(^)(NSString *,NSDictionary *))handler{
+    [self addNotifyObserverWithName:name handler:handler configHandler:nil];
 }
-- (void)addNotifyObserverWithName:(nonnull NSString *)name responseAction:(nonnull CHResponseHandler)responseHandler configHandler:(nullable void(^)(CHMessageResponseObj *))configHandler{
+- (void)addNotifyObserverWithName:(nonnull NSString *)name handler:(nonnull id(^)(NSString *,NSDictionary *))handler configHandler:(nullable void(^)(CHMessageResponseObj *))configHandler{
+    
+    if (!(name&&handler)) return;
     
     CHMessageResponseObj *obj = [[CHMessageResponseObj alloc] init];
-    obj.responseHandler = responseHandler;
-    obj.notifyName = [NSString stringWithFormat:@"CHObserber_%@",name];
+    
+    __weak __typeof__(obj) weakObj = obj;
+    obj.responseHandler = ^(NSString *notifyName, NSDictionary *responseDict) {
+        id response = handler(notifyName,responseDict);
+        NSString *responseNotifyName = weakObj.responseNotifyName;
+        if (response&&responseNotifyName) {
+            CFMutableDictionaryRef userInfoRef = CFDictionaryCreateMutable(CFAllocatorGetDefault(), 0, nil, nil);
+            NSData *reponseData= [NSJSONSerialization dataWithJSONObject:response?response:@{} options:NSJSONWritingPrettyPrinted error:nil];
+            CFDictionaryAddValue(userInfoRef, (__bridge void *)@"data", (__bridge void *)reponseData);
+            
+            CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
+            CFNotificationCenterPostNotification(distributedCenter,(__bridge CFStringRef)responseNotifyName,NULL,userInfoRef,true);
+            NSLog(@"哈哈哈==远程回复结果==%@",responseNotifyName);
+        }else{
+            NSLog(@"哈哈哈==无需回复的通知");
+        }
+    };
+    
+    obj.notifyName = [name hasPrefix:@"CHObserver_"]?name:[NSString stringWithFormat:@"CHObserver_%@",name];
     [self.responseObjs addObject:obj];
     if(configHandler) configHandler(obj);
-    [self addCFNotificationCenterObserverNamed:name];
+    [self addCFNotificationCenterObserverNamed:obj.notifyName];
+    
 }
+
 - (void)removeNotifyObserverWithName:(nonnull NSString *)name{
     for (CHMessageResponseObj *obj in self.responseObjs) {
         if ([obj.notifyName isEqualToString:name]) {
@@ -142,41 +190,34 @@ static dispatch_once_t predicate;
     [self postNotifyWithName:name userInfo:userInfo waitForResponseNotifyWithName:nil];
 }
 - (nullable NSDictionary *)postResponsiveNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo{
-    return [self postNotifyWithName:name userInfo:userInfo waitForResponseNotifyWithName:name];
+    return [self postNotifyWithName:name userInfo:userInfo waitForResponseNotifyWithName:[NSProcessInfo processInfo].processName];
 }
-- (nullable NSDictionary *)postNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo waitForResponseNotifyWithName:(nullable NSString *)responseName{
+- (nullable NSDictionary *)postNotifyWithName:(nonnull NSString *)name userInfo:(nullable NSDictionary *)userInfo waitForResponseNotifyWithName:(nullable NSString *)responseNotifyName{
+    
+    name = [NSString stringWithFormat:@"CHObserver_%@",name];
+    responseNotifyName = [NSString stringWithFormat:@"CHObserver_%@",responseNotifyName];
     
     self.cfNotiResult = nil;
-    
-    if (responseName) {
-        
-        __weak typeof(self) weakSelf = self;
-        
-        [self addNotifyObserverWithName:responseName responseAction:^(NSString * _Nonnull notifyName, NSDictionary * _Nonnull responseDict){
-            weakSelf.cfNotiResult = responseDict;
-            weakSelf.cfNotiResult = [responseDict copy];
-            dispatch_semaphore_signal(weakSelf.cfNotiLock);
-        } configHandler:^(CHMessageResponseObj *obj) {
-            obj.responseTimeOdd = 1;
-        }];
-    }
     
     //    CFStringRef notifyName = (CFStringRef)name;
     CFStringRef notifyName = (__bridge CFStringRef)name;
     CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
     
-    void *object;
+    __block void *object;
     CFMutableDictionaryRef userInfoRef = CFDictionaryCreateMutable(CFAllocatorGetDefault(), 0, nil, nil);
     if (userInfo) {
         NSData *data= [NSJSONSerialization dataWithJSONObject:userInfo options:NSJSONWritingPrettyPrinted error:nil];
+        
+//        CFDictionaryAddValue(userInfoRef, (const void *)@"data", (const void *)data);
         CFDictionaryAddValue(userInfoRef, (__bridge void *)@"data", (__bridge void *)data);
-        //        CFDictionaryAddValue(userInfoRef, (const void *)@"data", (const void *)data);
+        if (responseNotifyName) CFDictionaryAddValue(userInfoRef, (__bridge void *)@"responseNotifyName", (__bridge void *)responseNotifyName);
     }
     //    NSLog(@"哈利路亚");
     
     CFNotificationCenterPostNotification(distributedCenter,notifyName,object,userInfoRef,true);
     
-    if (responseName) {
+    NSLog(@"哈哈哈-卡1==%d",[NSThread currentThread].isMainThread);
+    if (responseNotifyName) {
         dispatch_time_t duration = dispatch_time(DISPATCH_TIME_NOW, self.timeOut * NSEC_PER_SEC);
         dispatch_semaphore_wait(self.cfNotiLock,duration);
     }
